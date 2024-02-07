@@ -9,8 +9,10 @@ import json
 import os
 import time
 import shutil
+import subprocess
 from PIL import Image
 
+UNITYEYES_PATH = "UnityEyes_Windows"
 FRAMES_PER_ID = 10
 IDS = 20
 FACE_POSITION = "right"
@@ -95,6 +97,9 @@ def vector_to_pitchyaw(vectors):
 
 class UnityEyesDataCreator:
     def __init__(self, datatype, frames_per_id=FRAMES_PER_ID, width=360, height=180):
+        self.unity_path = UNITYEYES_PATH
+        self.start_unity_eyes()
+
         # Window settings
         self.x_origin = 0
         self.y_origin = 0
@@ -128,7 +133,6 @@ class UnityEyesDataCreator:
         self._center_guess = [WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2]
         self.center = self._center_guess
         self.frames_per_id = frames_per_id
-        self.unity_path = "UnityEyes_Windows"
         self.imgs_and_json_folder = os.path.join(self.unity_path, "imgs")
         self.clean_output_folder()
         self.cutout_width = width
@@ -138,6 +142,22 @@ class UnityEyesDataCreator:
         self.new_cutout_imgs_and_json_folder = None
         self.dataset_imgs_and_json_folder = None
         assert not os.path.isdir(os.path.join(self.unity_path, f"imgs_{FACE_POSITION}"))
+
+    def start_unity_eyes(self):
+        try:
+            print("Starting UnityEyes")
+            subprocess.Popen(
+                os.path.join(self.unity_path, "unityeyes.exe"), cwd=self.unity_path
+            )
+        except Exception as e:
+            print(f"Error occurred while starting the application: {str(e)}")
+
+        time.sleep(10)
+        window = gw.getWindowsWithTitle("UnityEyes Configuration")[0]
+        window.moveTo(0, 0)
+        pyg.moveTo(350, 400)
+        pyg.click()
+        time.sleep(10)
 
     def reset_window_position(self):
         window = gw.getWindowsWithTitle("UnityEyes")[0]
@@ -444,7 +464,6 @@ class UnityEyesDataCreator:
 
 
 if __name__ == "__main__":
-    give_time_to_open_unity(3)
     dataset_creator = UnityEyesDataCreator(datatype="gaussian")
     command_toggle_ui()
     dataset_creator.find_center()
