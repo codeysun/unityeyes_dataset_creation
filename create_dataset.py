@@ -4,17 +4,20 @@
 import pyautogui as pyg
 import pygetwindow as gw
 import random
+import math
 import numpy as np
 import json
 import os
 import time
 import shutil
 import subprocess
+import win32api
+import win32con
 from PIL import Image
 
 UNITYEYES_PATH = "UnityEyes_Windows"
-FRAMES_PER_ID = 10
-IDS = 20
+FRAMES_PER_ID = 2
+IDS = 5
 FACE_POSITION = "right"
 radians_to_degrees = 180.0 / np.pi
 
@@ -101,22 +104,34 @@ class UnityEyesDataCreator:
         self.start_unity_eyes()
 
         # Window settings
-        self.x_origin = 0
-        self.y_origin = 0
-        self.x_width = 0
-        self.y_height = 0
-        self.reset_window_position()
+        x_origin, y_origin, x_width, y_height = self.reset_window_position()
+        self.mouse_border = {
+            "left": x_origin,
+            "right": x_width,
+            "bot": y_height,
+            "top": y_origin,
+        }
+        self.window_center = [
+            int(
+                self.mouse_border["left"]
+                + (self.mouse_border["right"] - self.mouse_border["left"]) / 2
+            ),
+            int(
+                self.mouse_border["top"]
+                + (self.mouse_border["bot"] - self.mouse_border["top"]) / 2
+            ),
+        ]
 
         # Eye gaze settings
         self.gaze_variance = 100
         self.velocity_limit = 100
         self.moment_limit = 40
-        self.mouse_border = {
-            "left": self.x_origin,
-            "right": self.x_width,
-            "bot": self.y_height,
-            "top": self.y_origin,
-        }
+        # Head pose settings
+        self.head_x_range = 20  # Range of head pose variation. In degrees
+        self.head_y_range = 20
+        self.head_dx_px = 0
+        self.head_dy_px = 0
+
         self.debug = True
         self.datatype = datatype
         self.face_position = 0
@@ -130,7 +145,7 @@ class UnityEyesDataCreator:
             [rand_sign() * random.randint(-3, -1), rand_sign() * random.randint(-3, -1)]
         )
         self.mouse_location = None
-        self._center_guess = [WINDOW_WIDTH / 2, WINDOW_HEIGHT / 2]
+        self._center_guess = self.window_center
         self.center = self._center_guess
         self.frames_per_id = frames_per_id
         self.imgs_and_json_folder = os.path.join(self.unity_path, "imgs")
@@ -163,12 +178,14 @@ class UnityEyesDataCreator:
         window = gw.getWindowsWithTitle("UnityEyes")[0]
         window.moveTo(0, 0)
         w_size = window.size
-        pad_width = (w_size[0] - WINDOW_WIDTH) / 2
+        pad_width = math.ceil((w_size[0] - WINDOW_WIDTH) / 2)
         title_bar_height = w_size[1] - WINDOW_HEIGHT - pad_width
-        self.x_origin = pad_width
-        self.y_origin = title_bar_height
-        self.x_width = WINDOW_WIDTH
-        self.y_height = self.y_origin + WINDOW_HEIGHT
+        return (
+            pad_width,
+            title_bar_height,
+            WINDOW_WIDTH,
+            title_bar_height + WINDOW_HEIGHT,
+        )
 
     def clean_output_folder(self):
         shutil.rmtree(self.imgs_and_json_folder)
@@ -195,6 +212,48 @@ class UnityEyesDataCreator:
         """
         self.id_count += 1
         pyg.typewrite("r")
+        self.command_randomize_head_pose(self.head_x_range, self.head_y_range)
+
+    def command_randomize_head_pose(self, x_deg_range, y_deg_range):
+        """
+        Randomize the head pose in uniform random distribution
+        """
+        # 100px movement = 20deg
+        # Convert degrees to pixels
+        x_px_range = x_deg_range * 5
+        y_px_range = y_deg_range * 5
+        direction = np.random.randint([0, 0], np.array([x_px_range, y_px_range]))
+        dx = direction[0]
+        dy = direction[1]
+
+        self.command_reset_head_pose()
+        pyg.typewrite("s")
+        self._command_move_head_pose(dx, dy)
+
+        self.head_dx_px = dx
+        self.head_dy_px = dy
+
+    def command_reset_head_pose(self):
+        self._command_move_head_pose(-self.head_dx_px, -self.head_dy_px)
+        self.head_dx_px = 0
+        self.head_dy_px = 0
+
+    def _command_move_head_pose(self, dx, dy):
+        x = self.window_center[0]
+        y = self.window_center[1]
+        pyg.moveTo(x, y)
+
+        # 100px movement = 20deg
+        # For some reason, this is the only way I can get dragging to work...
+        win32api.mouse_event(
+            win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0
+        )  # press left click (send the first postion)
+        win32api.mouse_event(
+            win32con.MOUSEEVENTF_MOVE, dx, dy, 0, 0
+        )  # use the MOUSEEVENTF_MOVE, send relative movement
+        win32api.mouse_event(
+            win32con.MOUSEEVENTF_LEFTUP, x + dx, y + dy, 0, 0
+        )  # release the left click (send the second postion)
 
     def get_current_looking_vec(self):
         self.command_save_image()
@@ -230,9 +289,12 @@ class UnityEyesDataCreator:
         """
         abs_min_x_angle = 100
         abs_min_y_angle = 100
+        eps = 0.002
         min_x_loc = self._center_guess[0]
         min_y_loc = self._center_guess[1]
-        for step_size in [10, 1, 0.1, 0.01, 0.001, 0.0001, 0.00001, 0.000001]:
+        print("Finding center")
+        print(self._center_guess)
+        for step_size in [10, 1]:
             print(f"Step size: {step_size}")
             x_looping = False
             while True:
@@ -244,7 +306,7 @@ class UnityEyesDataCreator:
                     )
                 x_look_vec = current_look_vec[0]
                 y_look_vec = current_look_vec[1]
-                if x_look_vec == y_look_vec == 0:
+                if abs(x_look_vec) <= eps and abs(y_look_vec) <= eps:
                     self.center = self._center_guess
                     print("found center for current face angle")
                     return self.center
