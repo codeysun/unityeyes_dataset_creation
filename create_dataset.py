@@ -16,8 +16,8 @@ import win32con
 from PIL import Image
 
 UNITYEYES_PATH = "UnityEyes_Windows"
-FRAMES_PER_ID = 2
-IDS = 5
+FRAMES_PER_ID = 5
+IDS = 10
 FACE_POSITION = "right"
 radians_to_degrees = 180.0 / np.pi
 
@@ -99,7 +99,7 @@ def vector_to_pitchyaw(vectors):
 
 
 class UnityEyesDataCreator:
-    def __init__(self, datatype, frames_per_id=FRAMES_PER_ID, width=360, height=180):
+    def __init__(self, datatype, width=360, height=180):
         self.unity_path = UNITYEYES_PATH
         self.start_unity_eyes()
 
@@ -131,6 +131,7 @@ class UnityEyesDataCreator:
         self.head_y_range = 20
         self.head_dx_px = 0
         self.head_dy_px = 0
+        # self.command_randomize_head_pose(self.head_x_range, self.head_y_range)
 
         self.debug = True
         self.datatype = datatype
@@ -147,7 +148,6 @@ class UnityEyesDataCreator:
         self.mouse_location = None
         self._center_guess = self.window_center
         self.center = self._center_guess
-        self.frames_per_id = frames_per_id
         self.imgs_and_json_folder = os.path.join(self.unity_path, "imgs")
         self.clean_output_folder()
         self.cutout_width = width
@@ -156,7 +156,7 @@ class UnityEyesDataCreator:
         self._y_correction = 0
         self.new_cutout_imgs_and_json_folder = None
         self.dataset_imgs_and_json_folder = None
-        assert not os.path.isdir(os.path.join(self.unity_path, f"imgs_{FACE_POSITION}"))
+        # assert not os.path.isdir(os.path.join(self.unity_path, f"imgs_{FACE_POSITION}"))
 
     def start_unity_eyes(self):
         try:
@@ -227,7 +227,6 @@ class UnityEyesDataCreator:
         dy = direction[1]
 
         self.command_reset_head_pose()
-        pyg.typewrite("s")
         self._command_move_head_pose(dx, dy)
 
         self.head_dx_px = dx
@@ -475,7 +474,7 @@ class UnityEyesDataCreator:
         else:
             raise ValueError(f"datatype {self.datatype} not supported")
 
-    def collect_dataset(self, face_position, ids):
+    def collect_dataset(self, ids, frames_per_id, set_num):
         """
         Main function to create dataset
         :param face_position:
@@ -484,49 +483,33 @@ class UnityEyesDataCreator:
         :return:
         """
 
-        # get face position identification int
-        self.face_position = determine_face_position_digit(face_position)
-
         self.new_cutout_imgs_and_json_folder = os.path.join(
-            self.unity_path, f"imgs_{face_position}_cutouts"
+            self.unity_path, f"imgs_{set_num}_cutouts"
         )
         self.dataset_imgs_and_json_folder = os.path.join(
-            self.unity_path, f"imgs_{face_position}"
+            self.unity_path, f"imgs_{set_num}"
         )
-        try:
-            os.mkdir(self.new_cutout_imgs_and_json_folder)
-        except:
-            if (
-                input(
-                    f"folders {self.new_cutout_imgs_and_json_folder} and {self.dataset_imgs_and_json_folder} already exist. delete old folders? [y/n]?"
-                )
-                == "y"
-            ):
-                print("Bring unity back to front...")
-                time.sleep(3)
-                shutil.rmtree(self.new_cutout_imgs_and_json_folder)
-                os.mkdir(self.new_cutout_imgs_and_json_folder)
-
-            else:
-                quit()
+        os.makedirs(self.new_cutout_imgs_and_json_folder, exist_ok=True)
 
         for id_idx in range(ids):
             self.change_id()
+            self.find_center()
             self.command_click_eyes_at_loc(self.center)
             if self.debug:
                 print(f"Changed ID, centering at {self.center}")
             self.frame_count = 0
-            for frame_idx in range(self.frames_per_id):
+            for frame_idx in range(frames_per_id):
                 self.frame_count += 1
                 self.collect_image()
                 self.move_eyes()
         print("Finished creating dataset. Moving data to storage, clearing imgs folder")
         os.rename(self.imgs_and_json_folder, self.dataset_imgs_and_json_folder)
-        os.mkdir(self.imgs_and_json_folder)
+        os.makedirs(self.imgs_and_json_folder)
 
 
 if __name__ == "__main__":
     dataset_creator = UnityEyesDataCreator(datatype="gaussian")
     command_toggle_ui()
-    dataset_creator.find_center()
-    dataset_creator.collect_dataset(face_position=FACE_POSITION, ids=IDS)
+    # dataset_creator.find_center()
+    time.sleep(0.1)
+    dataset_creator.collect_dataset(ids=IDS, frames_per_id=FRAMES_PER_ID, set_num=0)
