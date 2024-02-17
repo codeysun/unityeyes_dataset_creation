@@ -21,7 +21,7 @@ from PIL import Image
 UNITYEYES_PATH = "UnityEyes_Windows"
 GLASSES_PATH = "glasses"
 FRAMES_PER_ID = 5
-IDS = 10
+IDS = 5
 radians_to_degrees = 180.0 / np.pi
 
 NUM_GLASSES = 1
@@ -407,14 +407,14 @@ class UnityEyesDataCreator:
         command_randomize_illumination()
         self.command_randomize_id()
 
-    def collect_image(self, gim, gdata):
+    def collect_image(self, gim, gtrans):
         """
         save_image and progress image count
         """
         self.command_save_image()
-        self.process_image(self.crop, gim, gdata)
+        self.process_image(self.crop, gim, gtrans)
 
-    def process_image(self, crop=False, gim=None, gdata=None):
+    def process_image(self, crop=False, gim=None, gtrans=None):
         """
         catch last created image and prepare a cutout of the image with a meaningful name
         """
@@ -433,32 +433,11 @@ class UnityEyesDataCreator:
         # take last saved image
         im = Image.open(self.get_last_img_path())
         imdata = json.load(open(self.get_last_json_path()))
-        # im = cv2.imread(self.get_last_img_path())
 
         if gim is not None:
-            assert gdata is not None, "json data must be provided for glasses image"
-            # Randomly color the glasses
-            gcolor = (
-                random.randint(0, 150),
-                random.randint(0, 150),
-                random.randint(0, 150),
-            )
-            gcolor = Image.new("RGBA", im.size, gcolor)
-            gim = PIL.ImageChops.multiply(gim, gcolor)
-            # Get the eye and glasses centroids
-            gcentroid = np.array([eval(gdata["center"])])
-            print(gcentroid)
-            ldmks_interior_margin = process_json_list(imdata["interior_margin_2d"], im)
-            eyecentroid = np.mean(ldmks_interior_margin, axis=0)[:2]
-            print(eyecentroid)
-            # Randomly scale and position
-            scale = 1 + 0.5 * random.random()
-            translation = np.squeeze(eyecentroid - gcentroid)
-            print(translation)
-            translation += np.random.randint([0, 0], [20, 20])
-            print(tuple(int(x) for x in translation))
+            assert gtrans is not None, "Translation must be provided for glasses"
             # Superimpose glasses on the image
-            im.paste(gim, tuple(int(x) for x in translation), gim)
+            im.paste(gim, gtrans, gim)
 
         if crop:
             # Crop the image
@@ -468,7 +447,7 @@ class UnityEyesDataCreator:
             top = (WINDOW_HEIGHT / 2) - self.cutout_height // 2
 
             im = im.crop((left, top, right, bottom))
-            # im = im[top:bottom, left:right]
+
         # give it the name and save it
         full_new_path = os.path.join(
             self.new_cutout_imgs_and_json_folder, new_name + ".jpg"
@@ -570,15 +549,40 @@ class UnityEyesDataCreator:
             self.frame_count = 0
 
             glasses_im = None
-            glasses_data = None
+            glasses_trans = None
             if self.glasses:
+                # Load the current ID data
+                im = Image.open(self.get_last_img_path())
+                imdata = json.load(open(self.get_last_json_path()))
+
+                # Get random glasses template
                 gid = random.randint(1, NUM_GLASSES)
                 glasses_im = Image.open(os.path.join(self.glasses_path, f"g{gid}.png"))
                 glasses_json = open(os.path.join(self.glasses_path, f"g{gid}.json"))
                 glasses_data = json.load(glasses_json)
+                # Randomly color the glasses
+                gcolor = (
+                    random.randint(0, 150),
+                    random.randint(0, 150),
+                    random.randint(0, 150),
+                )
+                gcolor = Image.new("RGBA", glasses_im.size, gcolor)
+                glasses_im = PIL.ImageChops.multiply(glasses_im, gcolor)
+                # Get the eye and glasses centroids
+                gcentroid = np.array([eval(glasses_data["center"])])
+                ldmks_interior_margin = process_json_list(
+                    imdata["interior_margin_2d"], im
+                )
+                eyecentroid = np.mean(ldmks_interior_margin, axis=0)[:2]
+                # Randomly scale and position
+                scale = 1 + 0.5 * random.random()
+                glasses_trans = np.squeeze(eyecentroid - gcentroid)
+                glasses_trans += np.random.randint([0, 0], [20, 20])
+                glasses_trans = tuple(int(x) for x in glasses_trans)
+                # TODO: send the translation for paste command
             for frame_idx in range(frames_per_id):
                 self.frame_count += 1
-                self.collect_image(glasses_im, glasses_data)
+                self.collect_image(glasses_im, glasses_trans)
                 self.move_eyes()
         print("Finished creating dataset. Moving data to storage, clearing imgs folder")
         os.rename(self.imgs_and_json_folder, self.dataset_imgs_and_json_folder)
