@@ -1,6 +1,7 @@
 # Script for collecting data using UnityEyes
 # Ensure that UnityEyes is open before running the script
 
+import argparse
 import pyautogui as pyg
 import pygetwindow as gw
 import random
@@ -13,13 +14,17 @@ import shutil
 import subprocess
 import win32api
 import win32con
+import cv2
+import PIL
 from PIL import Image
 
 UNITYEYES_PATH = "UnityEyes_Windows"
+GLASSES_PATH = "glasses"
 FRAMES_PER_ID = 5
 IDS = 10
-FACE_POSITION = "right"
 radians_to_degrees = 180.0 / np.pi
+
+NUM_GLASSES = 1
 
 SCREEN_WIDTH = 3440
 SCREEN_HEIGHT = 1440
@@ -30,6 +35,14 @@ WINDOW_HEIGHT = 600
 
 def rand_sign():
     return 1 if random.random() < 0.5 else -1
+
+
+def sign(x):
+    if x == 0:
+        return 0
+    if x < 0:
+        return -1
+    return 1
 
 
 def displayMousePosition():
@@ -61,6 +74,11 @@ def determine_face_position_digit(face_position):
     assert face_position in ["center", "left", "right", "bottom", "top"]
     face_dict = {"center": 5, "left": 4, "right": 6, "bottom": 2, "top": 8}
     return face_dict[face_position]
+
+
+def process_json_list(json_list, img):
+    ldmks = [eval(s) for s in json_list]
+    return np.array([(x, WINDOW_HEIGHT - y, z) for (x, y, z) in ldmks])
 
 
 def give_time_to_open_unity(sec=7):
@@ -99,8 +117,10 @@ def vector_to_pitchyaw(vectors):
 
 
 class UnityEyesDataCreator:
-    def __init__(self, datatype, width=360, height=180):
+    def __init__(self, datatype, crop, glasses, width=360, height=180):
         self.unity_path = UNITYEYES_PATH
+        self.glasses_path = GLASSES_PATH
+        self.unityeyes_process = None
         self.start_unity_eyes()
 
         # Window settings
@@ -133,9 +153,12 @@ class UnityEyesDataCreator:
         self.head_dy_px = 0
         # self.command_randomize_head_pose(self.head_x_range, self.head_y_range)
 
+        # Post processing
+        self.crop = crop
+        self.glasses = glasses
+
         self.debug = True
         self.datatype = datatype
-        self.face_position = 0
         self.id_count = 0
         self.image_count = 0
         self.frame_count = 0
@@ -152,8 +175,8 @@ class UnityEyesDataCreator:
         self.clean_output_folder()
         self.cutout_width = width
         self.cutout_height = height
-        self._x_correction = 0
-        self._y_correction = 0
+        # self._x_correction = 0
+        # self._y_correction = 0
         self.new_cutout_imgs_and_json_folder = None
         self.dataset_imgs_and_json_folder = None
         # assert not os.path.isdir(os.path.join(self.unity_path, f"imgs_{FACE_POSITION}"))
@@ -161,7 +184,7 @@ class UnityEyesDataCreator:
     def start_unity_eyes(self):
         try:
             print("Starting UnityEyes")
-            subprocess.Popen(
+            self.unityeyes_process = subprocess.Popen(
                 os.path.join(self.unity_path, "unityeyes.exe"), cwd=self.unity_path
             )
         except Exception as e:
@@ -173,6 +196,9 @@ class UnityEyesDataCreator:
         pyg.moveTo(350, 400)
         pyg.click()
         time.sleep(10)
+
+    def close_unity_eyes(self):
+        self.unityeyes_process.terminate()
 
     def reset_window_position(self):
         window = gw.getWindowsWithTitle("UnityEyes")[0]
@@ -286,22 +312,30 @@ class UnityEyesDataCreator:
         turn eye to face camera. the look vec is positive when the eye looks to the right and upwards
         :return:
         """
+        self._center_guess = self.window_center
         abs_min_x_angle = 100
         abs_min_y_angle = 100
         eps = 0.002
         min_x_loc = self._center_guess[0]
         min_y_loc = self._center_guess[1]
+        x_correction = 0
+        y_correction = 0
+        max_iter = 20
         print("Finding center")
         print(self._center_guess)
-        for step_size in [10, 1]:
+
+        # TODO: fix this. This sucks.
+        for step_size in [10, 5, 2, 1, 1, 1]:
             print(f"Step size: {step_size}")
             x_looping = False
-            while True:
+            y_looping = False
+            iter = 0
+            while iter < max_iter and not (x_looping and y_looping):
                 self.command_click_eyes_at_loc(self._center_guess)
                 current_look_vec = self.get_current_looking_vec()
                 if self.debug:
                     print(
-                        f"#{self.image_count}: guessing: {self._center_guess} > {[current_look_vec[0], current_look_vec[1]]}"
+                        f"#{self.image_count}: guessing: {self._center_guess} > {[current_look_vec[0], current_look_vec[1]]} : x_looping {x_looping} y_looping {y_looping}"
                     )
                 x_look_vec = current_look_vec[0]
                 y_look_vec = current_look_vec[1]
@@ -310,53 +344,57 @@ class UnityEyesDataCreator:
                     print("found center for current face angle")
                     return self.center
                 else:
-                    if abs_min_x_angle + abs_min_y_angle > abs(x_look_vec) + abs(
+                    # What does this do?
+                    # if abs_min_x_angle + abs_min_y_angle > abs(x_look_vec) + abs(
+                    #     y_look_vec
+                    # ):
+                    #     abs_min_x_angle = abs(x_look_vec)
+                    #     min_x_loc = self._center_guess[0]
+                    #     abs_min_y_angle = abs(y_look_vec)
+                    #     min_y_loc = self._center_guess[1]
+
+                    # Detect convergence
+                    new_x_correction = -sign(x_look_vec)
+                    x_looping = (
+                        new_x_correction == 0 or new_x_correction == -x_correction
+                    )
+                    new_y_correction = sign(
                         y_look_vec
-                    ):
-                        abs_min_x_angle = abs(x_look_vec)
-                        min_x_loc = self._center_guess[0]
-                        abs_min_y_angle = abs(y_look_vec)
-                        min_y_loc = self._center_guess[1]
+                    )  # Note that negative look vec is down, but positive mouse location is down
+                    y_looping = (
+                        new_y_correction == 0 or new_y_correction == -y_correction
+                    )
 
-                    if x_look_vec > 0:
-                        if self._x_correction == 1:
-                            # reduce step size
-                            x_looping = True
-                            # break
+                    x_correction = new_x_correction
+                    y_correction = new_y_correction
 
-                        self._x_correction = -1
-                    else:
-                        if self._x_correction == -1:
-                            # reduce step size
-                            x_looping = True
-                            # break
-                        self._x_correction = 1
-
-                    if y_look_vec > 0:
-                        if self._y_correction == -1:
-                            # reduce step size
-                            if x_looping:
-                                break
-                        self._y_correction = 1
-                    else:
-                        if self._y_correction == 1:
-                            # reduce step size
-                            if x_looping:
-                                break
-                        self._y_correction = -1
-
+                    # Clamp to mouse border
                     self._center_guess = [
-                        self._center_guess[0] + self._x_correction * step_size,
-                        self._center_guess[1] + self._y_correction * step_size,
+                        max(
+                            min(
+                                self._center_guess[0] + x_correction * step_size,
+                                self.mouse_border["right"],
+                            ),
+                            self.mouse_border["left"],
+                        ),
+                        max(
+                            min(
+                                self._center_guess[1] + y_correction * step_size,
+                                self.mouse_border["bot"],
+                            ),
+                            self.mouse_border["top"],
+                        ),
                     ]
+                iter += 1
 
-        self.center = [min_x_loc, min_y_loc]
+        # If we never find the center...
+        self.center = self._center_guess
         self.command_click_eyes_at_loc(self.center)
         current_look_vec = self.get_current_looking_vec()
         print(
             f"Couldn't find center. closest is {current_look_vec} using {self.center} coords"
         )
-        assert abs(current_look_vec[0]) < 0.002 and abs(current_look_vec[1]) < 0.002
+        assert abs(current_look_vec[0]) < eps and abs(current_look_vec[1]) < eps
         print("Guess is close enough. proceeding")
 
         return self.center
@@ -369,14 +407,14 @@ class UnityEyesDataCreator:
         command_randomize_illumination()
         self.command_randomize_id()
 
-    def collect_image(self):
+    def collect_image(self, gim, gdata):
         """
         save_image and progress image count
         """
         self.command_save_image()
-        self.process_image()
+        self.process_image(self.crop, gim, gdata)
 
-    def process_image(self):
+    def process_image(self, crop=False, gim=None, gdata=None):
         """
         catch last created image and prepare a cutout of the image with a meaningful name
         """
@@ -384,10 +422,9 @@ class UnityEyesDataCreator:
         current_looking_vec = vector_to_pitchyaw(
             np.asarray([current_looking_vec])
         )  # convert to angle
-        new_image_name_template = "ID{}_P{}_T{}_N001_F{}_V{:4.2f}_H{:4.2f}.bmp"
-        new_image_name = new_image_name_template.format(
+        new_name_template = "ID{}_T{}_N001_F{}_V{:4.2f}_H{:4.2f}"
+        new_name = new_name_template.format(
             self.id_count,
-            self.face_position,
             self.datatype,
             self.frame_count,
             current_looking_vec[0][0],
@@ -395,18 +432,52 @@ class UnityEyesDataCreator:
         )
         # take last saved image
         im = Image.open(self.get_last_img_path())
+        imdata = json.load(open(self.get_last_json_path()))
+        # im = cv2.imread(self.get_last_img_path())
 
-        left = 400 - self.cutout_width // 2
-        right = 400 + self.cutout_width // 2
-        bottom = 300 + self.cutout_height // 2
-        top = 300 - self.cutout_height // 2
+        if gim is not None:
+            assert gdata is not None, "json data must be provided for glasses image"
+            # Randomly color the glasses
+            gcolor = (
+                random.randint(0, 150),
+                random.randint(0, 150),
+                random.randint(0, 150),
+            )
+            gcolor = Image.new("RGBA", im.size, gcolor)
+            gim = PIL.ImageChops.multiply(gim, gcolor)
+            # Get the eye and glasses centroids
+            gcentroid = np.array([eval(gdata["center"])])
+            print(gcentroid)
+            ldmks_interior_margin = process_json_list(imdata["interior_margin_2d"], im)
+            eyecentroid = np.mean(ldmks_interior_margin, axis=0)[:2]
+            print(eyecentroid)
+            # Randomly scale and position
+            scale = 1 + 0.5 * random.random()
+            translation = np.squeeze(eyecentroid - gcentroid)
+            print(translation)
+            translation += np.random.randint([0, 0], [20, 20])
+            print(tuple(int(x) for x in translation))
+            # Superimpose glasses on the image
+            im.paste(gim, tuple(int(x) for x in translation), gim)
 
-        cutout = im.crop((left, top, right, bottom))
+        if crop:
+            # Crop the image
+            left = (WINDOW_WIDTH / 2) - self.cutout_width // 2
+            right = (WINDOW_WIDTH / 2) + self.cutout_width // 2
+            bottom = (WINDOW_HEIGHT / 2) + self.cutout_height // 2
+            top = (WINDOW_HEIGHT / 2) - self.cutout_height // 2
+
+            im = im.crop((left, top, right, bottom))
+            # im = im[top:bottom, left:right]
         # give it the name and save it
         full_new_path = os.path.join(
-            self.new_cutout_imgs_and_json_folder, new_image_name
+            self.new_cutout_imgs_and_json_folder, new_name + ".jpg"
         )
-        cutout.save(full_new_path)
+        im.save(full_new_path)
+        shutil.copy(
+            self.get_last_json_path(),
+            os.path.join(self.new_cutout_imgs_and_json_folder, new_name + ".json"),
+        )
 
     def randomize_eye_gaze(self):
         direction = np.random.normal(np.array(self.center), self.gaze_variance)
@@ -477,7 +548,6 @@ class UnityEyesDataCreator:
     def collect_dataset(self, ids, frames_per_id, set_num):
         """
         Main function to create dataset
-        :param face_position:
         :param ids:
         :param frames_per_id:
         :return:
@@ -498,9 +568,17 @@ class UnityEyesDataCreator:
             if self.debug:
                 print(f"Changed ID, centering at {self.center}")
             self.frame_count = 0
+
+            glasses_im = None
+            glasses_data = None
+            if self.glasses:
+                gid = random.randint(1, NUM_GLASSES)
+                glasses_im = Image.open(os.path.join(self.glasses_path, f"g{gid}.png"))
+                glasses_json = open(os.path.join(self.glasses_path, f"g{gid}.json"))
+                glasses_data = json.load(glasses_json)
             for frame_idx in range(frames_per_id):
                 self.frame_count += 1
-                self.collect_image()
+                self.collect_image(glasses_im, glasses_data)
                 self.move_eyes()
         print("Finished creating dataset. Moving data to storage, clearing imgs folder")
         os.rename(self.imgs_and_json_folder, self.dataset_imgs_and_json_folder)
@@ -508,8 +586,14 @@ class UnityEyesDataCreator:
 
 
 if __name__ == "__main__":
-    dataset_creator = UnityEyesDataCreator(datatype="gaussian")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--crop", "-c", action="store_true", default=False)
+    parser.add_argument("--glasses", "-g", action="store_true", default=False)
+
+    args = parser.parse_args()
+    dataset_creator = UnityEyesDataCreator(
+        datatype="gaussian", crop=args.crop, glasses=args.glasses
+    )
     command_toggle_ui()
-    # dataset_creator.find_center()
     time.sleep(0.1)
-    dataset_creator.collect_dataset(ids=IDS, frames_per_id=FRAMES_PER_ID, set_num=0)
+    dataset_creator.collect_dataset(ids=IDS, frames_per_id=FRAMES_PER_ID, set_num=1)
