@@ -20,11 +20,11 @@ from PIL import Image
 
 UNITYEYES_PATH = "UnityEyes_Windows"
 GLASSES_PATH = "glasses"
-FRAMES_PER_ID = 5
-IDS = 5
+FRAMES_PER_ID = 40
+IDS = 10
 radians_to_degrees = 180.0 / np.pi
 
-NUM_GLASSES = 1
+NUM_GLASSES = 16
 
 SCREEN_WIDTH = 3440
 SCREEN_HEIGHT = 1440
@@ -569,17 +569,29 @@ class UnityEyesDataCreator:
                 gcolor = Image.new("RGBA", glasses_im.size, gcolor)
                 glasses_im = PIL.ImageChops.multiply(glasses_im, gcolor)
                 # Get the eye and glasses centroids
-                gcentroid = np.array([eval(glasses_data["center"])])
+                gcentroid = np.array([eval(glasses_data["center"])]).squeeze()
                 ldmks_interior_margin = process_json_list(
                     imdata["interior_margin_2d"], im
                 )
                 eyecentroid = np.mean(ldmks_interior_margin, axis=0)[:2]
-                # Randomly scale and position
-                scale = 1 + 0.5 * random.random()
+                # Randomly translate
                 glasses_trans = np.squeeze(eyecentroid - gcentroid)
                 glasses_trans += np.random.randint([0, 0], [20, 20])
                 glasses_trans = tuple(int(x) for x in glasses_trans)
-                # TODO: send the translation for paste command
+                # Randomly scale
+                scale = random.uniform(0.8, 1.2)
+                glasses_im = glasses_im.resize(
+                    tuple(int(scale * x) for x in glasses_im.size)
+                )
+                nc = scale * gcentroid
+                glasses_im = glasses_im.crop(
+                    (
+                        nc[0] - gcentroid[0],
+                        nc[1] - gcentroid[1],
+                        nc[0] + (WINDOW_WIDTH - gcentroid[0]),
+                        nc[1] + (WINDOW_HEIGHT - gcentroid[1]),
+                    )
+                )
             for frame_idx in range(frames_per_id):
                 self.frame_count += 1
                 self.collect_image(glasses_im, glasses_trans)
